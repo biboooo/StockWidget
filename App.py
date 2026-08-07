@@ -15,7 +15,15 @@ def resource_path(rel_path):
     return os.path.join(base, rel_path)
 
 # ----- 配置存档 -----
-CONFIG_DIR = os.path.join(os.getenv("APPDATA") or os.path.expanduser("~"), APP_NAME)
+# 1. 智能判断当前是 .exe 环境还是 .py 开发环境
+if getattr(sys, 'frozen', False):
+    # 如果是 PyInstaller 打包后的 .exe 运行，获取 exe 所在的目录
+    CONFIG_DIR = os.path.dirname(sys.executable)
+else:
+    # 如果是直接通过 Python 运行脚本，获取当前 .py 文件所在的目录
+    CONFIG_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# 2. 配置文件直接与 exe 放在同一个文件夹下
 CONFIG_FILE = os.path.join(CONFIG_DIR, "SW_config.json")
 
 def load_config():
