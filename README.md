@@ -70,7 +70,9 @@ python .\StockWidget.py
 ```powershell
 python3 -m PyInstaller -F -w .\StockWidget.py --name StockWidget --icon .\StockWidget.ico --add-data ".\StockWidget.ico;."
 ```
-
+```cmd
+.\.venv\Scripts\python.exe -m PyInstaller -F -w .\StockWidget.py --name StockWidget --icon .\StockWidget.ico --add-data ".\StockWidget.ico;." --hidden-import keyboard
+```
 > 提示 `No module named 'PIL'`：请先 `pip install Pillow`。
 > 任务栏/任务管理器图标不生效：
 >
