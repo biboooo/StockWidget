@@ -1,12 +1,13 @@
 import os, re
 from functools import partial
 
+import requests
 from PySide6.QtCore import Qt, QSize
 from PySide6.QtGui import QColor, QFontDatabase, QKeySequence, QDoubleValidator, QIntValidator, QAction
 from PySide6.QtWidgets import (
     QScrollArea, QWidget, QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QTabWidget, QPushButton, QSlider,
-    QGroupBox, QLabel, QColorDialog, QComboBox, QAbstractItemView,
-    QCheckBox, QListWidget, QListWidgetItem, QKeySequenceEdit, QFileDialog, QLineEdit, QMenu
+    QGroupBox, QLabel, QColorDialog, QComboBox, QAbstractItemView, QHeaderView,
+    QCheckBox, QListWidget, QListWidgetItem, QTableWidget, QTableWidgetItem, QKeySequenceEdit, QFileDialog, QLineEdit, QMenu
 )
 from WidgetPanel import FloatLabel
 from PySide6.QtWidgets import QSizePolicy
@@ -189,7 +190,7 @@ class SettingsDialog(QDialog):
         main.addWidget(self.tabs)
 
         self.tab_sizes = {
-            0: QSize(480, 300),
+            0: QSize(560, 320),
             1: QSize(480, 750),
             2: QSize(480, 460),
             3: QSize(480, 280),
@@ -208,17 +209,22 @@ class SettingsDialog(QDialog):
         g_codes.setContentsMargins(3,25,3,6)
         lay_codes = QHBoxLayout(g_codes)
         lay_codes.setSpacing(6)
-        # 1.1 代码列表
-        self.list_codes = QListWidget()
+        # 1.1 代码列表（代码 + 名称）
+        self.list_codes = QTableWidget(0, 2)
+        self.list_codes.setHorizontalHeaderLabels(["代码", "名称"])
+        self.list_codes.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.list_codes.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.list_codes.verticalHeader().setVisible(False)
+        self.list_codes.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.list_codes.setSelectionMode(QAbstractItemView.SingleSelection)
         self.list_codes.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.SelectedClicked | QAbstractItemView.EditKeyPressed)
-        # self.list_codes.setFixedWidth(150)
-        self.list_codes.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+        self.list_codes.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         for c in self.win.codes:
-            it = QListWidgetItem(c)
-            it.setFlags(it.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsEditable | Qt.ItemIsSelectable | Qt.ItemIsEnabled)
-            it.setCheckState(Qt.Checked if c in getattr(self.win, 'checked_codes', []) else Qt.Unchecked)
-            it.setData(Qt.UserRole, c)  # 记住上次有效值
-            self.list_codes.addItem(it)
+            self._append_code_row(
+                c,
+                checked=(c in getattr(self.win, 'checked_codes', [])),
+                name=self.win.get_code_name(c) if hasattr(self.win, "get_code_name") else "",
+            )
         # 1.2 操作按钮
         btn_col = QVBoxLayout()
         btn_col.setSpacing(4)
@@ -924,6 +930,7 @@ class SettingsDialog(QDialog):
         self.list_codes.itemSelectionChanged.connect(self._on_list_selection_changed)
         self.list_codes.setContextMenuPolicy(Qt.CustomContextMenu)
         self.list_codes.customContextMenuRequested.connect(self._on_list_context_menu)
+        self._refresh_all_names()
         # 连接：其它设置
         self.cmb_interval.currentIndexChanged.connect(self._on_interval_changed)
         self.cmb_namelength.currentIndexChanged.connect(self._on_name_length_changed)
@@ -1108,53 +1115,284 @@ class SettingsDialog(QDialog):
                 
         return None
 
+    def _append_code_row(self, code: str, checked: bool = False, name: str = ""):
+        """向自选表追加一行：代码(可勾选/可编辑) + 名称(只读)。"""
+        row = self.list_codes.rowCount()
+        self.list_codes.insertRow(row)
+
+        code_it = QTableWidgetItem(code)
+        code_it.setFlags(
+            Qt.ItemIsUserCheckable | Qt.ItemIsEditable | Qt.ItemIsSelectable | Qt.ItemIsEnabled
+        )
+        code_it.setCheckState(Qt.Checked if checked else Qt.Unchecked)
+        code_it.setData(Qt.UserRole, code)
+
+        name_it = QTableWidgetItem(name or "")
+        name_it.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+
+        self.list_codes.blockSignals(True)
+        self.list_codes.setItem(row, 0, code_it)
+        self.list_codes.setItem(row, 1, name_it)
+        self.list_codes.blockSignals(False)
+        return code_it
+
+    def _format_hq_code(self, code: str) -> str:
+        """把自选代码格式化成新浪 hq list 参数。"""
+        c_str = (code or "").strip()
+        if not c_str:
+            return ""
+        if c_str.lower().startswith(('nf_', 'hf_', 'b_')):
+            parts = c_str.split('_', 1)
+            if len(parts) == 2:
+                return f"{parts[0].lower()}_{parts[1].upper()}"
+            return c_str
+        return c_str.lower()
+
+    def _lookup_names(self, codes: list) -> dict:
+        """批量查询代码对应名称，返回 {code: name}。"""
+        result = {}
+        formatted = []
+        key_by_fmt = {}
+        for c in codes:
+            fmt = self._format_hq_code(c)
+            if not fmt:
+                continue
+            formatted.append(fmt)
+            key_by_fmt[fmt] = c
+            key_by_fmt[fmt.lower()] = c
+            key_by_fmt[fmt.upper()] = c
+
+        if not formatted:
+            return result
+
+        try:
+            url = 'https://hq.sinajs.cn/list=' + ','.join(formatted)
+            headers = {'Referer': 'https://finance.sina.com.cn', 'User-Agent': 'Mozilla/5.0'}
+            r = requests.get(url, headers=headers, timeout=3)
+            r.encoding = 'gbk'
+        except Exception:
+            return result
+
+        for line in r.text.split('\n'):
+            if not line or '="' not in line:
+                continue
+            prefix_part, payload = line.split('="', 1)
+            parts = payload.split(',')
+            if not parts:
+                continue
+
+            name = ""
+            code_key = ""
+            if "str_hf_" in prefix_part:
+                code_key = prefix_part.split('str_hf_')[-1]
+                if len(parts) > 13:
+                    name = parts[13]
+            elif "str_nf_" in prefix_part:
+                code_key = prefix_part.split('str_nf_')[-1]
+                name = parts[0]
+            elif "str_b_" in prefix_part:
+                code_key = prefix_part.split('str_b_')[-1]
+                name = parts[0]
+            elif "str_fx_" in prefix_part:
+                code_key = prefix_part.split('str_fx_')[-1]
+                if len(parts) > 9:
+                    name = parts[9]
+            elif "str_rt_hk" in prefix_part:
+                code_key = prefix_part.split('str_rt_hk')[-1]
+                if len(parts) > 1:
+                    name = parts[1]
+            elif "str_hk" in prefix_part:
+                code_key = prefix_part.split('str_hk')[-1]
+                if len(parts) > 1:
+                    name = parts[1]
+            elif "str_gb_" in prefix_part:
+                code_key = prefix_part.split('str_gb_')[-1]
+                name = parts[0]
+            else:
+                # A股等：hq_str_sh600000
+                heads = prefix_part.split('_')
+                code_key = heads[-1] if heads else ""
+                # 形如 hq_str_sh600000 -> 需要 sh600000
+                m = re.search(r'str_((?:sh|sz|bj)\d+)$', prefix_part, re.I)
+                if m:
+                    code_key = m.group(1)
+                name = parts[0]
+
+            name = (name or "").replace('"', '').replace(';', '').strip()
+            if not name or not code_key:
+                continue
+
+            # 还原到原始自选代码键
+            candidates = [
+                code_key,
+                code_key.lower(),
+                code_key.upper(),
+                f"hf_{code_key}",
+                f"hf_{code_key.upper()}",
+                f"nf_{code_key}",
+                f"nf_{code_key.upper()}",
+                f"b_{code_key}",
+                f"b_{code_key.upper()}",
+                f"gb_{code_key}",
+                f"gb_{code_key.lower()}",
+                f"fx_{code_key}",
+                f"fx_{code_key.lower()}",
+                f"rt_hk{code_key}",
+                f"hk{code_key}",
+            ]
+            orig = None
+            for cand in candidates:
+                if cand in key_by_fmt:
+                    orig = key_by_fmt[cand]
+                    break
+                # 也直接匹配传入 codes
+            if orig is None:
+                for c in codes:
+                    cl = c.lower()
+                    ck = code_key.lower()
+                    if cl == ck or cl.endswith(ck) or cl.replace('_', '') == ck.replace('_', ''):
+                        orig = c
+                        break
+            if orig is None:
+                orig = code_key
+            result[orig] = name
+            result[orig.lower()] = name
+        return result
+
+    def _set_row_name(self, row: int, name: str):
+        name_it = self.list_codes.item(row, 1)
+        if name_it is None:
+            name_it = QTableWidgetItem("")
+            name_it.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+            self.list_codes.setItem(row, 1, name_it)
+        self.list_codes.blockSignals(True)
+        name_it.setText(name or "")
+        self.list_codes.blockSignals(False)
+
+    def _refresh_all_names(self, force: bool = False):
+        """从配置读取名称；缺失时再联网查询，并回写配置。"""
+        codes = []
+        row_codes = {}
+        missing = []
+        for i in range(self.list_codes.rowCount()):
+            it = self.list_codes.item(i, 0)
+            if it is None:
+                continue
+            code = it.data(Qt.UserRole) or self._normalize_code_or_none(it.text()) or it.text().strip()
+            if not code:
+                continue
+            row_codes[i] = code
+            codes.append(code)
+            # 优先用配置/已有名称
+            cfg_name = ""
+            if hasattr(self.win, "get_code_name"):
+                cfg_name = self.win.get_code_name(code)
+            name_it = self.list_codes.item(i, 1)
+            cur_name = (name_it.text().strip() if name_it else "") or cfg_name
+            if cur_name and not force:
+                self._set_row_name(i, cur_name)
+            else:
+                missing.append(code)
+
+        name_map = {}
+        if missing:
+            name_map = self._lookup_names(missing)
+        # 合并：现有行名称 + 新查到的
+        persist = {}
+        for i, code in row_codes.items():
+            name = name_map.get(code) or name_map.get(str(code).lower()) or ""
+            if not name:
+                name_it = self.list_codes.item(i, 1)
+                name = (name_it.text().strip() if name_it else "")
+            if not name and hasattr(self.win, "get_code_name"):
+                name = self.win.get_code_name(code)
+            if name:
+                self._set_row_name(i, name)
+                persist[code] = name
+        if persist and hasattr(self.win, "set_code_names"):
+            self.win.set_code_names(persist)
+
+    def _collect_names_from_list(self) -> dict:
+        """从自选表收集 {code: name}。"""
+        out = {}
+        for i in range(self.list_codes.rowCount()):
+            code_it = self.list_codes.item(i, 0)
+            name_it = self.list_codes.item(i, 1)
+            if code_it is None:
+                continue
+            code = code_it.data(Qt.UserRole) or self._normalize_code_or_none(code_it.text()) or code_it.text().strip()
+            name = name_it.text().strip() if name_it else ""
+            if code and name:
+                out[str(code).strip().lower()] = name
+        return out
+
     def _collect_codes_from_list(self):
         codes = []
         seen = set()
-        for i in range(self.list_codes.count()):
-            txt = self.list_codes.item(i).text()
+        i = 0
+        while i < self.list_codes.rowCount():
+            it = self.list_codes.item(i, 0)
+            if it is None:
+                self.list_codes.removeRow(i)
+                continue
+            txt = it.text()
             norm = self._normalize_code_or_none(txt)
             if norm:
                 if norm not in seen:
                     seen.add(norm)
                     codes.append(norm)
                 # 写回规范化文本
-                it = self.list_codes.item(i)
                 if it.text() != norm:
                     self.list_codes.blockSignals(True)
                     it.setText(norm)
                     it.setData(Qt.UserRole, norm)
                     self.list_codes.blockSignals(False)
+                else:
+                    it.setData(Qt.UserRole, norm)
+                i += 1
             else:
                 # 回退到上次有效值
-                it = self.list_codes.item(i)
                 prev = it.data(Qt.UserRole)
                 if prev:
                     self.list_codes.blockSignals(True)
                     it.setText(prev)
                     self.list_codes.blockSignals(False)
+                    i += 1
                 else:
-                    # 没有上次有效值则删除
-                    self.list_codes.takeItem(i)
-                    return self._collect_codes_from_list()
+                    self.list_codes.removeRow(i)
         return codes
 
     def _on_codes_changed(self, _item):
+        # 名称列变更不回写配置
+        if _item is not None and self.list_codes.column(_item) == 1:
+            return
+
+        refresh_names = False
+        if _item is not None and self.list_codes.column(_item) == 0:
+            raw = (_item.text() or "").strip()
+            prev = (_item.data(Qt.UserRole) or "").strip()
+            norm = self._normalize_code_or_none(raw) or raw
+            name_it = self.list_codes.item(self.list_codes.row(_item), 1)
+            has_name = bool(name_it and name_it.text().strip())
+            # 仅勾选变化且名称已有时，不必重新查名
+            refresh_names = (norm != prev) or (not has_name)
+
         codes = self._collect_codes_from_list()
         self.win.set_codes(codes)
-        checked_codes = [
-            self.list_codes.item(i).text().split()[0]
-            for i in range(self.list_codes.count())
-            if self.list_codes.item(i).checkState() == Qt.Checked
-        ]
+        checked_codes = []
+        for i in range(self.list_codes.rowCount()):
+            it = self.list_codes.item(i, 0)
+            if it is not None and it.checkState() == Qt.Checked:
+                checked_codes.append(it.text().split()[0])
         self.win.set_checked_codes(checked_codes)
-
+        # 已有名称落盘；缺失名称再联网补全
+        names = self._collect_names_from_list()
+        if names and hasattr(self.win, "set_code_names"):
+            self.win.set_code_names(names)
+        if refresh_names:
+            self._refresh_all_names()
     def _add_code(self):
-        it = QListWidgetItem("sh000001")
-        it.setFlags(it.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsEditable | Qt.ItemIsSelectable | Qt.ItemIsEnabled)
-        it.setCheckState(Qt.Unchecked)
-        it.setData(Qt.UserRole, "sh000001")
-        self.list_codes.addItem(it)
+        it = self._append_code_row("sh000001", checked=False, name="")
         self.list_codes.setCurrentItem(it)
         self.list_codes.editItem(it)
         self._on_codes_changed(it)
@@ -1162,28 +1400,38 @@ class SettingsDialog(QDialog):
     def _del_code(self):
         row = self.list_codes.currentRow()
         if row >= 0:
-            self.list_codes.takeItem(row)
+            self.list_codes.removeRow(row)
             self._on_codes_changed(None)
+
+    def _swap_table_rows(self, r1: int, r2: int):
+        cols = self.list_codes.columnCount()
+        for col in range(cols):
+            a = self.list_codes.takeItem(r1, col)
+            b = self.list_codes.takeItem(r2, col)
+            self.list_codes.setItem(r1, col, b)
+            self.list_codes.setItem(r2, col, a)
 
     def _move_up(self):
         row = self.list_codes.currentRow()
         if row > 0:
-            it = self.list_codes.takeItem(row)
-            self.list_codes.insertItem(row-1, it)
-            self.list_codes.setCurrentRow(row-1)
+            self.list_codes.blockSignals(True)
+            self._swap_table_rows(row, row - 1)
+            self.list_codes.blockSignals(False)
+            self.list_codes.setCurrentCell(row - 1, 0)
             self._on_codes_changed(None)
 
     def _move_down(self):
         row = self.list_codes.currentRow()
-        if 0 <= row < self.list_codes.count()-1:
-            it = self.list_codes.takeItem(row)
-            self.list_codes.insertItem(row+1, it)
-            self.list_codes.setCurrentRow(row+1)
+        if 0 <= row < self.list_codes.rowCount() - 1:
+            self.list_codes.blockSignals(True)
+            self._swap_table_rows(row, row + 1)
+            self.list_codes.blockSignals(False)
+            self.list_codes.setCurrentCell(row + 1, 0)
             self._on_codes_changed(None)
 
     # —— 设置成本 —— #
     def _on_list_selection_changed(self):
-        has = self.list_codes.currentItem() is not None
+        has = self.list_codes.currentRow() >= 0
         self.btn_cost.setEnabled(has)
         self.btn_alert.setEnabled(has)
 
@@ -1191,22 +1439,27 @@ class SettingsDialog(QDialog):
         item = self.list_codes.itemAt(pos)
         if item is None:
             return
-        self.list_codes.setCurrentItem(item)
+        row = self.list_codes.row(item)
+        code_item = self.list_codes.item(row, 0)
+        if code_item is None:
+            return
+        self.list_codes.setCurrentItem(code_item)
         menu = QMenu(self.list_codes)
         act = QAction("设置成本…", menu)
-        act.triggered.connect(lambda: self._open_cost_dialog_for_item(item))
+        act.triggered.connect(lambda: self._open_cost_dialog_for_item(code_item))
         menu.addAction(act)
         act_alert = QAction("封单预警…", menu)
-        act_alert.triggered.connect(lambda: self._open_alert_dialog_for_item(item))
+        act_alert.triggered.connect(lambda: self._open_alert_dialog_for_item(code_item))
         menu.addAction(act_alert)
         menu.exec(self.list_codes.viewport().mapToGlobal(pos))
 
     def _open_cost_dialog_for_current(self):
-        item = self.list_codes.currentItem()
+        row = self.list_codes.currentRow()
+        item = self.list_codes.item(row, 0) if row >= 0 else None
         if item is not None:
             self._open_cost_dialog_for_item(item)
 
-    def _open_cost_dialog_for_item(self, item: QListWidgetItem):
+    def _open_cost_dialog_for_item(self, item: QTableWidgetItem):
         raw = item.text().strip()
         code = self._normalize_code_or_none(raw) or raw.lower()
         if not code:
@@ -1227,11 +1480,12 @@ class SettingsDialog(QDialog):
                 pass
 
     def _open_alert_dialog_for_current(self):
-        item = self.list_codes.currentItem()
+        row = self.list_codes.currentRow()
+        item = self.list_codes.item(row, 0) if row >= 0 else None
         if item is not None:
             self._open_alert_dialog_for_item(item)
 
-    def _open_alert_dialog_for_item(self, item: QListWidgetItem):
+    def _open_alert_dialog_for_item(self, item: QTableWidgetItem):
         raw = item.text().strip()
         code = self._normalize_code_or_none(raw) or raw.lower()
         if not code:
