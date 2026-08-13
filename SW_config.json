@@ -128,10 +128,10 @@
   "up_color": "#ff4500",
   "down_color": "#2adb5c",
   "grid_alpha_pct": 31,
-  "header_alpha_pct": 100,
+  "header_alpha_pct": 90,
   "pos": {
-    "x": 1218,
-    "y": 546
+    "x": 1444,
+    "y": 585
   },
   "hotkey": "Ctrl+Alt+F",
   "start_on_boot": false,
