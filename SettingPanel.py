@@ -223,7 +223,7 @@ class SettingsDialog(QDialog):
             self._append_code_row(
                 c,
                 checked=(c in getattr(self.win, 'checked_codes', [])),
-                name="",
+                name=self.win.get_code_name(c) if hasattr(self.win, "get_code_name") else "",
             )
         # 1.2 操作按钮
         btn_col = QVBoxLayout()
@@ -1269,23 +1269,62 @@ class SettingsDialog(QDialog):
         name_it.setText(name or "")
         self.list_codes.blockSignals(False)
 
-    def _refresh_all_names(self):
+    def _refresh_all_names(self, force: bool = False):
+        """从配置读取名称；缺失时再联网查询，并回写配置。"""
         codes = []
         row_codes = {}
+        missing = []
         for i in range(self.list_codes.rowCount()):
             it = self.list_codes.item(i, 0)
             if it is None:
                 continue
             code = it.data(Qt.UserRole) or self._normalize_code_or_none(it.text()) or it.text().strip()
-            if code:
-                row_codes[i] = code
-                codes.append(code)
-        if not codes:
-            return
-        name_map = self._lookup_names(codes)
+            if not code:
+                continue
+            row_codes[i] = code
+            codes.append(code)
+            # 优先用配置/已有名称
+            cfg_name = ""
+            if hasattr(self.win, "get_code_name"):
+                cfg_name = self.win.get_code_name(code)
+            name_it = self.list_codes.item(i, 1)
+            cur_name = (name_it.text().strip() if name_it else "") or cfg_name
+            if cur_name and not force:
+                self._set_row_name(i, cur_name)
+            else:
+                missing.append(code)
+
+        name_map = {}
+        if missing:
+            name_map = self._lookup_names(missing)
+        # 合并：现有行名称 + 新查到的
+        persist = {}
         for i, code in row_codes.items():
             name = name_map.get(code) or name_map.get(str(code).lower()) or ""
-            self._set_row_name(i, name)
+            if not name:
+                name_it = self.list_codes.item(i, 1)
+                name = (name_it.text().strip() if name_it else "")
+            if not name and hasattr(self.win, "get_code_name"):
+                name = self.win.get_code_name(code)
+            if name:
+                self._set_row_name(i, name)
+                persist[code] = name
+        if persist and hasattr(self.win, "set_code_names"):
+            self.win.set_code_names(persist)
+
+    def _collect_names_from_list(self) -> dict:
+        """从自选表收集 {code: name}。"""
+        out = {}
+        for i in range(self.list_codes.rowCount()):
+            code_it = self.list_codes.item(i, 0)
+            name_it = self.list_codes.item(i, 1)
+            if code_it is None:
+                continue
+            code = code_it.data(Qt.UserRole) or self._normalize_code_or_none(code_it.text()) or code_it.text().strip()
+            name = name_it.text().strip() if name_it else ""
+            if code and name:
+                out[str(code).strip().lower()] = name
+        return out
 
     def _collect_codes_from_list(self):
         codes = []
@@ -1346,9 +1385,12 @@ class SettingsDialog(QDialog):
             if it is not None and it.checkState() == Qt.Checked:
                 checked_codes.append(it.text().split()[0])
         self.win.set_checked_codes(checked_codes)
+        # 已有名称落盘；缺失名称再联网补全
+        names = self._collect_names_from_list()
+        if names and hasattr(self.win, "set_code_names"):
+            self.win.set_code_names(names)
         if refresh_names:
             self._refresh_all_names()
-
     def _add_code(self):
         it = self._append_code_row("sh000001", checked=False, name="")
         self.list_codes.setCurrentItem(it)

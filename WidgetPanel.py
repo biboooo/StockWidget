@@ -52,7 +52,7 @@ class FloatLabel(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setFocusPolicy(Qt.StrongFocus)
 
-        # 加载配置
+        # 加载配置（codes / checked_codes 支持字符串或 {"code","name"}）
         codes_cfg               = cfg.get("codes",["sh000001"])             # 自选列表
         checked_codes_cfg       = cfg.get("checked_codes", cfg.get("visible_codes", codes_cfg))  # 在浮窗中显示的股票（新名 checked_codes，兼容 visible_codes）
         self.refresh_seconds    = int(cfg.get("refresh_seconds", 2))        # 刷新间隔
@@ -201,8 +201,8 @@ class FloatLabel(QWidget):
         # 冷却记录：{(code, "reach_up"/"reach_down"/"leave_up"/"leave_down"): last_fire_timestamp}
         self._limit_alert_cooldowns = {}
 
-        # 设置初值
-        self.codes = [str(c).strip() for c in codes_cfg if str(c).strip()]
+        # 设置初值（解析 codes / checked_codes，同时提取名称）
+        self.codes, self.code_names = self._parse_codes_cfg(codes_cfg)
         # 列标题列表（提前定义，供后续旧配置解析使用）
         self.ALL_HEADERS = ["代码", "名称", "现价", "涨跌值", "涨跌幅", "盈亏", "买一", "卖一", "委比", "成交量", "成交额", "均价", "日高", "日低", "K线"]
 
@@ -250,9 +250,16 @@ class FloatLabel(QWidget):
         self.simple_kline_visible = bool(simple_cfg.get("K线", False))
         self.simple_pnl_visible = bool(simple_cfg.get("盈亏", False))
 
-        # 设置自选显示股票（新名 checked_codes）
-        self.codes = [str(c).strip() for c in codes_cfg if str(c).strip()]
-        self.checked_codes = [str(c).strip() for c in checked_codes_cfg if (str(c).strip() and str(c).strip() in self.codes)]
+        # 设置自选显示股票（新名 checked_codes）；名称合并进 code_names
+        checked_list, checked_names = self._parse_codes_cfg(checked_codes_cfg)
+        for k, v in checked_names.items():
+            if v and k not in self.code_names:
+                self.code_names[k] = v
+        self.checked_codes = [c for c in checked_list if c in self.codes]
+        if not self.codes:
+            self.codes = ["sh000001"]
+        if not self.checked_codes:
+            self.checked_codes = list(self.codes)
         self.font = QFont(font_family, max(8, min(15, font_size)))
         self.bg = QColor(bg["r"],bg["g"],bg["b"],bg["a"])
         
@@ -576,10 +583,51 @@ class FloatLabel(QWidget):
         cb = getattr(self, "_on_change", None)
         if callable(cb): cb()
 
+    @staticmethod
+    def _parse_code_entry(entry):
+        """解析单条自选：支持字符串或 {"code","name"}，返回 (code, name)。"""
+        if isinstance(entry, dict):
+            code = str(entry.get("code", "")).strip()
+            name = str(entry.get("name", "") or "").strip()
+            return code, name
+        return str(entry).strip(), ""
+
+    def _parse_codes_cfg(self, cfg_list):
+        """解析 codes/checked_codes 配置，返回 (codes_list, code_names_dict)。"""
+        codes = []
+        names = {}
+        seen = set()
+        if not isinstance(cfg_list, list):
+            return codes, names
+        for entry in cfg_list:
+            code, name = self._parse_code_entry(entry)
+            if not code:
+                continue
+            key = code  # 保留原样；后续 set_* 会规范化
+            if key not in seen:
+                seen.add(key)
+                codes.append(key)
+            if name:
+                names[key] = name
+                names[key.lower()] = name
+        return codes, names
+
+    def _codes_with_names(self, codes_list):
+        """序列化为带名称的配置项列表。"""
+        out = []
+        name_map = getattr(self, "code_names", {}) or {}
+        for c in codes_list:
+            code = str(c).strip()
+            if not code:
+                continue
+            name = name_map.get(code) or name_map.get(code.lower()) or ""
+            out.append({"code": code, "name": name})
+        return out
+
     def current_config(self):
         return {
-            "codes": self.codes,
-            "checked_codes": self.checked_codes,
+            "codes": self._codes_with_names(self.codes),
+            "checked_codes": self._codes_with_names(self.checked_codes),
             "code_visible": bool(getattr(self, 'code_visible', False)),
             "name_visible": bool(getattr(self, 'name_visible', False)),
             "price_visible": bool(getattr(self, 'price_visible', False)),
@@ -1500,13 +1548,22 @@ class FloatLabel(QWidget):
         seen = set()
         new = []
         for c in codes_list:
-            s = str(c).strip().lower()
+            code, name = self._parse_code_entry(c) if not isinstance(c, str) else (str(c).strip(), "")
+            s = code.lower() if code else ""
             if s and s not in seen:
                 seen.add(s)
                 new.append(s)
+                if name:
+                    if not hasattr(self, "code_names") or self.code_names is None:
+                        self.code_names = {}
+                    self.code_names[s] = name
         if not new: 
             new = ["sh000001"]
         self.codes = new
+        # 清理已删除代码的名称缓存
+        if getattr(self, "code_names", None):
+            keep = set(new)
+            self.code_names = {k: v for k, v in self.code_names.items() if k in keep or k.lower() in keep}
         # 清理已删除股票的成本数据
         if self.cost_data:
             keep = set(new)
@@ -1523,15 +1580,41 @@ class FloatLabel(QWidget):
         seen = set()
         new = []
         for c in codes_list:
-            s = str(c).strip().lower()
+            code, name = self._parse_code_entry(c) if not isinstance(c, str) else (str(c).strip(), "")
+            s = code.lower() if code else ""
             if s and s not in seen:
                 seen.add(s)
                 new.append(s)
+                if name:
+                    if not hasattr(self, "code_names") or self.code_names is None:
+                        self.code_names = {}
+                    self.code_names[s] = name
         if not new: 
             new = ["sh000001"]
         self.checked_codes = new
         self._notify_change()
         self._refresh_from_function()
+
+    def set_code_names(self, name_map: dict):
+        """更新代码→名称映射并写回配置。"""
+        if not hasattr(self, "code_names") or self.code_names is None:
+            self.code_names = {}
+        if not isinstance(name_map, dict):
+            return
+        for k, v in name_map.items():
+            code = str(k).strip().lower()
+            name = str(v or "").strip()
+            if code and name:
+                self.code_names[code] = name
+        # 去掉已不在自选中的名称
+        keep = set(getattr(self, "codes", []) or [])
+        self.code_names = {k: v for k, v in self.code_names.items() if k in keep}
+        self._notify_change()
+
+    def get_code_name(self, code: str) -> str:
+        name_map = getattr(self, "code_names", {}) or {}
+        c = str(code or "").strip()
+        return name_map.get(c) or name_map.get(c.lower()) or ""
 
     def set_flag(self, idx, checked: bool):
         """设置指标显示标志。idx 可以是整数索引（向后兼容）或列标题字符串"""
