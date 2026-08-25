@@ -875,7 +875,8 @@ class FloatLabel(EdgeHideMixin, MarketDataMixin, AlertsMixin, QWidget):
             pass
 
     # ----- 应用设置 -----
-    def set_codes(self, codes_list):
+    def set_codes(self, codes_list, *, notify=True, refresh=True):
+        """更新自选代码。notify/refresh 可关，便于与 set_checked_codes 合并为一次写盘/拉行情。"""
         seen = set()
         new = []
         for c in codes_list:
@@ -888,8 +889,10 @@ class FloatLabel(EdgeHideMixin, MarketDataMixin, AlertsMixin, QWidget):
                     if not hasattr(self, "code_names") or self.code_names is None:
                         self.code_names = {}
                     self.code_names[s] = name
-        if not new: 
+        if not new:
             new = ["sh000001"]
+        if new == list(getattr(self, "codes", []) or []):
+            return False
         self.codes = new
         # 清理已删除代码的名称缓存
         if getattr(self, "code_names", None):
@@ -904,10 +907,14 @@ class FloatLabel(EdgeHideMixin, MarketDataMixin, AlertsMixin, QWidget):
             keep = set(new)
             self.alert_data = {k: v for k, v in self.alert_data.items() if k in keep}
             self._alert_state = {k: v for k, v in self._alert_state.items() if k in keep}
-        self._notify_change()
-        self._refresh_from_function()
+        if notify:
+            self._notify_change()
+        if refresh:
+            self._refresh_from_function()
+        return True
 
-    def set_checked_codes(self, codes_list):
+    def set_checked_codes(self, codes_list, *, notify=True, refresh=True):
+        """更新勾选代码。notify/refresh 可关，便于与 set_codes 合并为一次写盘/拉行情。"""
         seen = set()
         new = []
         for c in codes_list:
@@ -920,11 +927,16 @@ class FloatLabel(EdgeHideMixin, MarketDataMixin, AlertsMixin, QWidget):
                     if not hasattr(self, "code_names") or self.code_names is None:
                         self.code_names = {}
                     self.code_names[s] = name
-        if not new: 
+        if not new:
             new = ["sh000001"]
+        if new == list(getattr(self, "checked_codes", []) or []):
+            return False
         self.checked_codes = new
-        self._notify_change()
-        self._refresh_from_function()
+        if notify:
+            self._notify_change()
+        if refresh:
+            self._refresh_from_function()
+        return True
 
     def set_code_names(self, name_map: dict):
         """更新代码→名称映射并写回配置。"""

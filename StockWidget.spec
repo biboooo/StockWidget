@@ -6,12 +6,7 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[('StockWidget.ico', '.')],
-    hiddenimports=[
-        'keyboard',
-        'settings', 'settings.dialogs', 'settings.tab_codes', 'settings.tab_display',
-        'settings.tab_appearance', 'settings.tab_general', 'settings.tab_alerts',
-        'widget', 'widget.edge_hide', 'widget.market_data', 'widget.alerts',
-    ],
+    hiddenimports=['keyboard'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

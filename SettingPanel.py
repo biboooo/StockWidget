@@ -6,7 +6,7 @@ import os
 from PySide6.QtCore import Qt, QSize
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QTabWidget, QWidget, QSizePolicy
 
-from settings.dialogs import CostDialog, AlertDialog
+from settings.dialogs import AddCodeDialog, CostDialog, AlertDialog
 from settings.tab_codes import CodesTabMixin
 from settings.tab_display import DisplayTabMixin
 from settings.tab_appearance import AppearanceTabMixin
@@ -68,7 +68,6 @@ class SettingsDialog(
         self.list_codes.itemSelectionChanged.connect(self._on_list_selection_changed)
         self.list_codes.setContextMenuPolicy(Qt.CustomContextMenu)
         self.list_codes.customContextMenuRequested.connect(self._on_list_context_menu)
-        self._refresh_all_names()
         # 连接：其它设置
         self.cmb_interval.currentIndexChanged.connect(self._on_interval_changed)
         self.cmb_namelength.currentIndexChanged.connect(self._on_name_length_changed)
@@ -146,4 +145,4 @@ class SettingsDialog(
 
 
 # re-exports for compatibility
-__all__ = ["SettingsDialog", "CostDialog", "AlertDialog"]
+__all__ = ["SettingsDialog", "AddCodeDialog", "CostDialog", "AlertDialog"]

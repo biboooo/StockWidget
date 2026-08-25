@@ -41,8 +41,8 @@
       "name": "华能国际"
     },
     {
-      "code": "sh601668",
-      "name": "中国建筑"
+      "code": "gb_aapl",
+      "name": "苹果"
     }
   ],
   "checked_codes": [
@@ -87,8 +87,8 @@
       "name": "华能国际"
     },
     {
-      "code": "sh601668",
-      "name": "中国建筑"
+      "code": "gb_aapl",
+      "name": "苹果"
     }
   ],
   "code_visible": true,
@@ -130,7 +130,7 @@
   "grid_alpha_pct": 31,
   "header_alpha_pct": 90,
   "pos": {
-    "x": 1444,
+    "x": 1520,
     "y": 585
   },
   "hotkey": "Ctrl+Alt+F",
