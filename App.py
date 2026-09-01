@@ -25,6 +25,7 @@ else:
 
 # 2. 配置文件直接与 exe 放在同一个文件夹下
 CONFIG_FILE = os.path.join(CONFIG_DIR, "SW_config.json")
+QUOTES_DB = os.path.join(CONFIG_DIR, "SW_quotes.db")
 
 def load_config():
     try:
@@ -89,7 +90,7 @@ class App(QApplication):
         self._tooltip_text = ""
 
         cfg = load_config()
-        self.win = FloatLabel(cfg)
+        self.win = FloatLabel(cfg, quotes_db=QUOTES_DB)
         # Apply start-on-boot setting from config
         try:
             self.set_start_on_boot(bool(cfg.get("start_on_boot", False)))

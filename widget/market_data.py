@@ -39,6 +39,16 @@ class MarketDataMixin:
         # 兜底返回原样
         return raw_code
 
+    @staticmethod
+    def _canonical_sina_code(prefix_part: str) -> str:
+        """从 hq_str_ 前缀提取规范代码（小写，便于与 checked_codes 对齐）。"""
+        raw = prefix_part
+        if "hq_str_" in prefix_part:
+            raw = prefix_part.split("hq_str_", 1)[-1]
+        elif "str_" in prefix_part:
+            raw = prefix_part.split("str_", 1)[-1]
+        return str(raw).strip().lower()
+
     # ----- 数据来源：新浪财经 -----
     def _get_price(self, codes:list):
         formatted_codes = []
@@ -67,6 +77,8 @@ class MarketDataMixin:
 
         price_data = []
         sign_data = []
+        result_codes = []
+        result_pnls = []
         total_pnl = 0.0
         has_pnl = False
         url = 'https://hq.sinajs.cn/list=' + label
@@ -470,7 +482,9 @@ class MarketDataMixin:
             k_payload = {"k": (opening_price, current_price, high_price, low_price, prev_close)}
 
             # 计算盈亏：(现价 - 成本) * 持仓数量
-            cd = self.cost_data.get(code)
+            # cost_data 键为 checked_codes 规范码（小写）；展示用 code 可能不含前缀
+            canon_code = self._canonical_sina_code(prefix_part)
+            cd = self.cost_data.get(canon_code) or self.cost_data.get(code)
             if cd:
                 pnl_val = (current_price - cd["cost"]) * cd["qty"]
                 pnl_label = self._fmt_signed(pnl_val, 3 if etf else 2)
@@ -478,6 +492,7 @@ class MarketDataMixin:
                 total_pnl += pnl_val
                 has_pnl = True
             else:
+                pnl_val = None
                 pnl_label = ""
                 pnl_sign = 0
 
@@ -546,5 +561,7 @@ class MarketDataMixin:
                 "high": (high_price > prev_close) - (high_price < prev_close) if prev_close else 0,
                 "low": (low_price > prev_close) - (low_price < prev_close) if prev_close else 0,
             })
+            result_codes.append(canon_code)
+            result_pnls.append(pnl_val)
         
-        return price_data, sign_data, total_pnl, has_pnl
+        return price_data, sign_data, total_pnl, has_pnl, result_codes, result_pnls

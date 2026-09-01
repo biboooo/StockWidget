@@ -4,16 +4,14 @@ import webbrowser
 
 from PySide6.QtCore import QPropertyAnimation, QRect, Qt, QEvent, QTimer, Signal, QPoint
 from PySide6.QtGui import QEnterEvent, QFont, QAction, QColor, QGuiApplication, QPalette
-from PySide6.QtWidgets import QApplication, QWidget, QMenu, QVBoxLayout, QLabel, QTableView, QHeaderView, QAbstractItemView, QFrame, QStyledItemDelegate
+from PySide6.QtWidgets import QApplication, QWidget, QMenu, QVBoxLayout, QLabel, QTableView, QHeaderView, QAbstractItemView, QFrame, QStyledItemDelegate, QStyle
 
 from Display import SimpleTableModel, KLineDelegate, DEFAULT_UP_COLOR, DEFAULT_DOWN_COLOR, DEFAULT_TABLE_COLOR
 from widget.edge_hide import EdgeHideMixin
 from widget.market_data import MarketDataMixin
 from widget.alerts import AlertsMixin
+from widget.quote_db import init_db
 MIN_FONT_SIZE = 6
-
-from PySide6.QtWidgets import QStyledItemDelegate
-from PySide6.QtWidgets import QStyle
 
 class NoSelectionDelegate(QStyledItemDelegate):
     def paint(self, painter, option, index):
@@ -27,10 +25,20 @@ class NoSelectionDelegate(QStyledItemDelegate):
 
 class FloatLabel(EdgeHideMixin, MarketDataMixin, AlertsMixin, QWidget):
     hotkey_triggered = Signal()
-    def __init__(self, cfg: dict):
+    def __init__(self, cfg: dict, quotes_db: str | None = None):
         super().__init__()
         self._on_change = (lambda: None)
         self._open_settings_cb = None
+
+        # 行情 SQLite 缓存（与 SW_config.json 同目录）
+        if not quotes_db:
+            import sys, os
+            if getattr(sys, "frozen", False):
+                _base = os.path.dirname(sys.executable)
+            else:
+                _base = os.path.dirname(os.path.abspath(__file__))
+            quotes_db = os.path.join(_base, "SW_quotes.db")
+        self._quote_db = init_db(quotes_db)
 
         # --- 贴边隐藏相关设置 ---
         self.is_hidden_state = False # 记录当前是否处于隐藏状态
@@ -54,9 +62,9 @@ class FloatLabel(EdgeHideMixin, MarketDataMixin, AlertsMixin, QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setFocusPolicy(Qt.StrongFocus)
 
-        # 加载配置（codes / checked_codes 支持字符串或 {"code","name"}）
-        codes_cfg               = cfg.get("codes",["sh000001"])             # 自选列表
-        checked_codes_cfg       = cfg.get("checked_codes", cfg.get("visible_codes", codes_cfg))  # 在浮窗中显示的股票（新名 checked_codes，兼容 visible_codes）
+        # 自选列表：优先 SQLite watchlist；空则从 JSON 迁移一次
+        codes_cfg               = cfg.get("codes", ["sh000001"])
+        checked_codes_cfg       = cfg.get("checked_codes", cfg.get("visible_codes", codes_cfg))
         self.refresh_seconds    = int(cfg.get("refresh_seconds", 2))        # 刷新间隔
         flags_cfg               = cfg.get("flags", {})                      # 指标开关（字典格式）
         self.short_code         = bool(cfg.get("short_code", False))
@@ -123,6 +131,9 @@ class FloatLabel(EdgeHideMixin, MarketDataMixin, AlertsMixin, QWidget):
                         self.cost_data[str(k).strip().lower()] = {"cost": cost, "qty": qty}
                 except Exception:
                     pass
+
+        # 买卖点：{code: {"buy": float, "sell": float}}，由 SQLite watchlist 加载
+        self.trade_points = {}
 
         # 封单预警阈值：{code: [int, ...]}（正=涨停封单手数，负=跌停封单手数）
         alert_cfg = cfg.get("alert_data", {}) or {}
@@ -203,8 +214,8 @@ class FloatLabel(EdgeHideMixin, MarketDataMixin, AlertsMixin, QWidget):
         # 冷却记录：{(code, "reach_up"/"reach_down"/"leave_up"/"leave_down"): last_fire_timestamp}
         self._limit_alert_cooldowns = {}
 
-        # 设置初值（解析 codes / checked_codes，同时提取名称）
-        self.codes, self.code_names = self._parse_codes_cfg(codes_cfg)
+        # 设置初值：自选 codes / checked_codes / 名称（SQLite 优先）
+        self._load_watchlist_or_migrate(codes_cfg, checked_codes_cfg)
         # 列标题列表（提前定义，供后续旧配置解析使用）
         self.ALL_HEADERS = ["代码", "名称", "现价", "涨跌值", "涨跌幅", "盈亏", "买一", "卖一", "委比", "成交量", "成交额", "均价", "日高", "日低", "K线"]
 
@@ -252,16 +263,6 @@ class FloatLabel(EdgeHideMixin, MarketDataMixin, AlertsMixin, QWidget):
         self.simple_kline_visible = bool(simple_cfg.get("K线", False))
         self.simple_pnl_visible = bool(simple_cfg.get("盈亏", False))
 
-        # 设置自选显示股票（新名 checked_codes）；名称合并进 code_names
-        checked_list, checked_names = self._parse_codes_cfg(checked_codes_cfg)
-        for k, v in checked_names.items():
-            if v and k not in self.code_names:
-                self.code_names[k] = v
-        self.checked_codes = [c for c in checked_list if c in self.codes]
-        if not self.codes:
-            self.codes = ["sh000001"]
-        if not self.checked_codes:
-            self.checked_codes = list(self.codes)
         self.font = QFont(font_family, max(8, min(15, font_size)))
         self.bg = QColor(bg["r"],bg["g"],bg["b"],bg["a"])
         
@@ -448,6 +449,52 @@ class FloatLabel(EdgeHideMixin, MarketDataMixin, AlertsMixin, QWidget):
             return f"https://finance.sina.com.cn/futures/quotes/{f_code}.shtml"
 
 
+    def _load_watchlist_or_migrate(self, codes_cfg, checked_codes_cfg):
+        """从 SQLite 加载自选；若为空则从 JSON 配置迁移并落库。"""
+        try:
+            loaded = self._quote_db.load_watchlist()
+            db_codes, db_checked, db_names = loaded[0], loaded[1], loaded[2]
+            db_points = loaded[3] if len(loaded) > 3 else {}
+        except Exception:
+            db_codes, db_checked, db_names, db_points = [], [], {}, {}
+
+        if db_codes:
+            self.codes = list(db_codes)
+            self.code_names = dict(db_names or {})
+            code_set = set(self.codes)
+            self.checked_codes = [c for c in (db_checked or []) if c in code_set] or list(self.codes)
+            self.trade_points = {
+                k: v for k, v in (db_points or {}).items() if k in code_set
+            }
+            return
+
+        # JSON → SQLite 一次性迁移
+        self.codes, self.code_names = self._parse_codes_cfg(codes_cfg)
+        checked_list, checked_names = self._parse_codes_cfg(checked_codes_cfg)
+        for k, v in checked_names.items():
+            if v and k not in self.code_names:
+                self.code_names[k] = v
+        code_set = set(self.codes)
+        self.checked_codes = [c for c in checked_list if c in code_set]
+        if not self.codes:
+            self.codes = ["sh000001"]
+        if not self.checked_codes:
+            self.checked_codes = list(self.codes)
+        self.trade_points = {}
+        self._persist_watchlist()
+
+    def _persist_watchlist(self):
+        """将当前 codes / checked_codes / 名称 / 买卖点写入 SQLite。"""
+        try:
+            self._quote_db.save_watchlist(
+                self.codes,
+                self.checked_codes,
+                self.code_names,
+                getattr(self, "trade_points", None) or {},
+            )
+        except Exception:
+            pass
+
     # 与 App 连接
     def set_open_settings_callback(self, fn): 
         self._open_settings_cb = fn
@@ -469,7 +516,7 @@ class FloatLabel(EdgeHideMixin, MarketDataMixin, AlertsMixin, QWidget):
         return str(entry).strip(), ""
 
     def _parse_codes_cfg(self, cfg_list):
-        """解析 codes/checked_codes 配置，返回 (codes_list, code_names_dict)。"""
+        """解析 codes/checked_codes 配置，返回小写 codes 与名称映射。"""
         codes = []
         names = {}
         seen = set()
@@ -479,31 +526,16 @@ class FloatLabel(EdgeHideMixin, MarketDataMixin, AlertsMixin, QWidget):
             code, name = self._parse_code_entry(entry)
             if not code:
                 continue
-            key = code  # 保留原样；后续 set_* 会规范化
+            key = code.lower()
             if key not in seen:
                 seen.add(key)
                 codes.append(key)
             if name:
                 names[key] = name
-                names[key.lower()] = name
         return codes, names
-
-    def _codes_with_names(self, codes_list):
-        """序列化为带名称的配置项列表。"""
-        out = []
-        name_map = getattr(self, "code_names", {}) or {}
-        for c in codes_list:
-            code = str(c).strip()
-            if not code:
-                continue
-            name = name_map.get(code) or name_map.get(code.lower()) or ""
-            out.append({"code": code, "name": name})
-        return out
 
     def current_config(self):
         return {
-            "codes": self._codes_with_names(self.codes),
-            "checked_codes": self._codes_with_names(self.checked_codes),
             "code_visible": bool(getattr(self, 'code_visible', False)),
             "name_visible": bool(getattr(self, 'name_visible', False)),
             "price_visible": bool(getattr(self, 'price_visible', False)),
@@ -829,32 +861,45 @@ class FloatLabel(EdgeHideMixin, MarketDataMixin, AlertsMixin, QWidget):
         self._fit_to_contents()
 
     def _refresh_from_function(self):
+        err = None
         try:
-            full_rows, sign, total_pnl, has_pnl = self._get_price(self.checked_codes)
+            price_data, sign_data, _tp, _hp, codes, pnls = self._get_price(self.checked_codes)
+            items = []
+            for i, code in enumerate(codes):
+                row = price_data[i]
+                name = str(row[1] or "") if isinstance(row, (list, tuple)) and len(row) > 1 else ""
+                items.append((code, name, row, sign_data[i], pnls[i] if i < len(pnls) else None))
+            self._quote_db.upsert_quotes(items)
         except Exception as e:
+            err = e
+
+        full_rows, sign, total_pnl, has_pnl = self._quote_db.load_quotes(self.checked_codes)
+        if full_rows:
             try:
-                import requests as _req
-                if isinstance(e, _req.exceptions.RequestException):
-                    self._show_error(_req.exceptions.RequestException())
-                else:
-                    self._show_error(str(e))
+                self._clear_error()
             except Exception:
-                self._show_error(str(e))
+                pass
+            self._apply_quote_rows(full_rows, sign, total_pnl, has_pnl)
             return
 
-        try:
-            self._clear_error()
-        except Exception:
-            pass
+        if err is not None:
+            try:
+                import requests as _req
+                if isinstance(err, _req.exceptions.RequestException):
+                    self._show_error(_req.exceptions.RequestException())
+                else:
+                    self._show_error(str(err))
+            except Exception:
+                self._show_error(str(err))
+
+    def _apply_quote_rows(self, full_rows, sign, total_pnl, has_pnl):
+        """将行情行投影到表格，并更新托盘盈亏/ToolTip。"""
         self._project_columns(full_rows, sign)
-        # 通知外部更新总盈亏指示（用于托盘图标红绿灯泡）
         try:
             if callable(self._pnl_callback):
                 self._pnl_callback(float(total_pnl), bool(has_pnl))
         except Exception:
             pass
-        # 构建托盘 ToolTip 指标文本（使用制表符分隔）
-        # 始终使用正常模式可见列，不受双模式/简易模式影响
         try:
             if callable(self._tooltip_callback):
                 cols_idx = [i for i, h in enumerate(self.ALL_HEADERS)
@@ -880,7 +925,7 @@ class FloatLabel(EdgeHideMixin, MarketDataMixin, AlertsMixin, QWidget):
         seen = set()
         new = []
         for c in codes_list:
-            code, name = self._parse_code_entry(c) if not isinstance(c, str) else (str(c).strip(), "")
+            code, name = self._parse_code_entry(c)
             s = code.lower() if code else ""
             if s and s not in seen:
                 seen.add(s)
@@ -898,15 +943,25 @@ class FloatLabel(EdgeHideMixin, MarketDataMixin, AlertsMixin, QWidget):
         if getattr(self, "code_names", None):
             keep = set(new)
             self.code_names = {k: v for k, v in self.code_names.items() if k in keep or k.lower() in keep}
+        # 勾选列表跟随自选裁剪
+        keep = set(new)
+        self.checked_codes = [c for c in (getattr(self, "checked_codes", []) or []) if c in keep]
+        if not self.checked_codes:
+            self.checked_codes = list(new)
         # 清理已删除股票的成本数据
         if self.cost_data:
             keep = set(new)
             self.cost_data = {k: v for k, v in self.cost_data.items() if k in keep}
+        # 清理已删除股票的买卖点
+        if getattr(self, "trade_points", None):
+            keep = set(new)
+            self.trade_points = {k: v for k, v in self.trade_points.items() if k in keep}
         # 清理已删除股票的封单预警数据
         if self.alert_data:
             keep = set(new)
             self.alert_data = {k: v for k, v in self.alert_data.items() if k in keep}
             self._alert_state = {k: v for k, v in self._alert_state.items() if k in keep}
+        self._persist_watchlist()
         if notify:
             self._notify_change()
         if refresh:
@@ -918,7 +973,7 @@ class FloatLabel(EdgeHideMixin, MarketDataMixin, AlertsMixin, QWidget):
         seen = set()
         new = []
         for c in codes_list:
-            code, name = self._parse_code_entry(c) if not isinstance(c, str) else (str(c).strip(), "")
+            code, name = self._parse_code_entry(c)
             s = code.lower() if code else ""
             if s and s not in seen:
                 seen.add(s)
@@ -932,6 +987,7 @@ class FloatLabel(EdgeHideMixin, MarketDataMixin, AlertsMixin, QWidget):
         if new == list(getattr(self, "checked_codes", []) or []):
             return False
         self.checked_codes = new
+        self._persist_watchlist()
         if notify:
             self._notify_change()
         if refresh:
@@ -939,7 +995,7 @@ class FloatLabel(EdgeHideMixin, MarketDataMixin, AlertsMixin, QWidget):
         return True
 
     def set_code_names(self, name_map: dict):
-        """更新代码→名称映射并写回配置。"""
+        """更新代码→名称映射并写回 SQLite。"""
         if not hasattr(self, "code_names") or self.code_names is None:
             self.code_names = {}
         if not isinstance(name_map, dict):
@@ -952,6 +1008,7 @@ class FloatLabel(EdgeHideMixin, MarketDataMixin, AlertsMixin, QWidget):
         # 去掉已不在自选中的名称
         keep = set(getattr(self, "codes", []) or [])
         self.code_names = {k: v for k, v in self.code_names.items() if k in keep}
+        self._persist_watchlist()
         self._notify_change()
 
     def get_code_name(self, code: str) -> str:
@@ -1103,6 +1160,42 @@ class FloatLabel(EdgeHideMixin, MarketDataMixin, AlertsMixin, QWidget):
         """返回指定股票的成本数据 dict 或 None。"""
         try:
             return self.cost_data.get(str(code).strip().lower())
+        except Exception:
+            return None
+
+    def set_trade_points(self, code: str, buy: float, sell: float):
+        """设置指定股票的买入点/卖出点。两者均 <=0 时清除。"""
+        try:
+            key = str(code).strip().lower()
+            if not key:
+                return
+            try:
+                buy_f = float(buy)
+            except Exception:
+                buy_f = 0.0
+            try:
+                sell_f = float(sell)
+            except Exception:
+                sell_f = 0.0
+            if not hasattr(self, "trade_points") or self.trade_points is None:
+                self.trade_points = {}
+            if buy_f > 0 or sell_f > 0:
+                self.trade_points[key] = {
+                    "buy": buy_f if buy_f > 0 else 0.0,
+                    "sell": sell_f if sell_f > 0 else 0.0,
+                }
+            else:
+                self.trade_points.pop(key, None)
+            self._persist_watchlist()
+        except Exception:
+            pass
+
+    def get_trade_points(self, code: str):
+        """返回指定股票的买卖点 dict 或 None。"""
+        try:
+            return (getattr(self, "trade_points", None) or {}).get(
+                str(code).strip().lower()
+            )
         except Exception:
             return None
 

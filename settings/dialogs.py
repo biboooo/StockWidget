@@ -277,6 +277,69 @@ class CostDialog(QDialog):
         return cost, qty
 
 
+class BuySellDialog(QDialog):
+    """设置买入点 / 卖出点的对话框。"""
+    def __init__(self, parent: QWidget, code: str, buy: float = 0.0, sell: float = 0.0):
+        super().__init__(parent)
+        self.setWindowTitle(f"编辑买卖点 - {code}")
+        self.setModal(True)
+        self.setFixedWidth(260)
+
+        layout = QGridLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setHorizontalSpacing(8)
+        layout.setVerticalSpacing(8)
+
+        layout.addWidget(QLabel("买入点："), 0, 0)
+        self.edit_buy = QLineEdit(f"{buy:g}" if buy and buy > 0 else "")
+        self.edit_buy.setPlaceholderText("例如 12.345")
+        buy_v = QDoubleValidator(0.0, 1e9, 4, self)
+        buy_v.setNotation(QDoubleValidator.StandardNotation)
+        self.edit_buy.setValidator(buy_v)
+        layout.addWidget(self.edit_buy, 0, 1)
+
+        layout.addWidget(QLabel("卖出点："), 1, 0)
+        self.edit_sell = QLineEdit(f"{sell:g}" if sell and sell > 0 else "")
+        self.edit_sell.setPlaceholderText("例如 15.678")
+        sell_v = QDoubleValidator(0.0, 1e9, 4, self)
+        sell_v.setNotation(QDoubleValidator.StandardNotation)
+        self.edit_sell.setValidator(sell_v)
+        layout.addWidget(self.edit_sell, 1, 1)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        self.btn_clear = QPushButton("清除")
+        self.btn_ok = QPushButton("确定")
+        self.btn_cancel = QPushButton("取消")
+        for b in (self.btn_clear, self.btn_ok, self.btn_cancel):
+            b.setFixedWidth(60)
+            btn_row.addWidget(b)
+        layout.addLayout(btn_row, 2, 0, 1, 2)
+
+        self._cleared = False
+        self.btn_ok.clicked.connect(self.accept)
+        self.btn_cancel.clicked.connect(self.reject)
+        self.btn_clear.clicked.connect(self._on_clear)
+
+    def _on_clear(self):
+        self._cleared = True
+        self.accept()
+
+    def get_values(self):
+        """返回 (buy, sell)。清除时返回 (0.0, 0.0)。"""
+        if self._cleared:
+            return 0.0, 0.0
+        try:
+            buy = float(self.edit_buy.text().strip() or 0)
+        except Exception:
+            buy = 0.0
+        try:
+            sell = float(self.edit_sell.text().strip() or 0)
+        except Exception:
+            sell = 0.0
+        return buy, sell
+
+
 class AlertDialog(QDialog):
     """设置封单预警阈值的对话框。可添加多个阈值：正=涨停封单手数，负=跌停封单手数。"""
     def __init__(self, parent: QWidget, code: str, thresholds: list = None):

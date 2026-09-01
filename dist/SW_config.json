@@ -21,16 +21,24 @@
       "name": "Vanguard标普500指数ETF"
     },
     {
-      "code": "sh563230",
-      "name": "卫星ETF富国"
-    },
-    {
       "code": "sh511100",
       "name": "国债ETF华夏"
     },
     {
+      "code": "sh518800",
+      "name": "黄金etf"
+    },
+    {
       "code": "sh600036",
       "name": "招商银行"
+    },
+    {
+      "code": "sh601318",
+      "name": "中国平安"
+    },
+    {
+      "code": "sz000001",
+      "name": "平安银行"
     },
     {
       "code": "sh601166",
@@ -45,8 +53,16 @@
       "name": "中国建筑"
     },
     {
+      "code": "sz002555",
+      "name": "三七互娱"
+    },
+    {
+      "code": "sh600887",
+      "name": "伊利"
+    },
+    {
       "code": "gb_qqq",
-      "name": "上证指数"
+      "name": "纳100指数"
     }
   ],
   "checked_codes": [
@@ -71,32 +87,40 @@
       "name": "Vanguard标普500指数ETF"
     },
     {
-      "code": "sh563230",
-      "name": "卫星ETF富国"
-    },
-    {
       "code": "sh511100",
       "name": "国债ETF华夏"
+    },
+    {
+      "code": "sh518800",
+      "name": "黄金etf"
     },
     {
       "code": "sh600036",
       "name": "招商银行"
     },
     {
-      "code": "sh601166",
-      "name": "兴业银行"
+      "code": "sh601318",
+      "name": "中国平安"
     },
     {
-      "code": "sh600011",
-      "name": "华能国际"
+      "code": "sh601166",
+      "name": "兴业银行"
     },
     {
       "code": "sh601668",
       "name": "中国建筑"
     },
     {
+      "code": "sz002555",
+      "name": "三七互娱"
+    },
+    {
+      "code": "sh600887",
+      "name": "伊利"
+    },
+    {
       "code": "gb_qqq",
-      "name": "上证指数"
+      "name": "纳100指数"
     }
   ],
   "code_visible": true,
@@ -138,8 +162,8 @@
   "grid_alpha_pct": 31,
   "header_alpha_pct": 100,
   "pos": {
-    "x": 1098,
-    "y": 543
+    "x": 1520,
+    "y": 528
   },
   "hotkey": "Ctrl+Alt+F",
   "start_on_boot": false,

@@ -39,7 +39,7 @@ class SettingsDialog(
         main.addWidget(self.tabs)
 
         self.tab_sizes = {
-            0: QSize(560, 320),
+            0: QSize(640, 320),
             1: QSize(480, 750),
             2: QSize(480, 460),
             3: QSize(480, 280),
@@ -64,6 +64,7 @@ class SettingsDialog(
         self.btn_up.clicked.connect(self._move_up)
         self.btn_dn.clicked.connect(self._move_down)
         self.btn_cost.clicked.connect(self._open_cost_dialog_for_current)
+        self.btn_edit_points.clicked.connect(self._open_points_dialog_for_current)
         self.btn_alert.clicked.connect(self._open_alert_dialog_for_current)
         self.list_codes.itemSelectionChanged.connect(self._on_list_selection_changed)
         self.list_codes.setContextMenuPolicy(Qt.CustomContextMenu)

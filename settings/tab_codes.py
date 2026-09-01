@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QSizePolicy, QMessageBox,
 )
 
-from settings.dialogs import AddCodeDialog, CostDialog, AlertDialog
+from settings.dialogs import AddCodeDialog, CostDialog, AlertDialog, BuySellDialog
 
 
 class CodesTabMixin:
@@ -28,11 +28,13 @@ class CodesTabMixin:
         g_codes.setContentsMargins(3,25,3,6)
         lay_codes = QHBoxLayout(g_codes)
         lay_codes.setSpacing(6)
-        # 1.1 代码列表（代码 + 名称）
-        self.list_codes = QTableWidget(0, 2)
-        self.list_codes.setHorizontalHeaderLabels(["代码", "名称"])
+        # 1.1 代码列表（代码 + 名称 + 买入点 + 卖出点）
+        self.list_codes = QTableWidget(0, 4)
+        self.list_codes.setHorizontalHeaderLabels(["代码", "名称", "买入点", "卖出点"])
         self.list_codes.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.list_codes.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.list_codes.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.list_codes.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
         self.list_codes.verticalHeader().setVisible(False)
         self.list_codes.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.list_codes.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -57,10 +59,14 @@ class CodesTabMixin:
         self.btn_cost = QPushButton("设置成本")
         self.btn_cost.setFixedWidth(60)
         self.btn_cost.setEnabled(False)
+        self.btn_edit_points = QPushButton("编辑")
+        self.btn_edit_points.setFixedWidth(60)
+        self.btn_edit_points.setEnabled(False)
         self.btn_alert = QPushButton("封单预警")
         self.btn_alert.setFixedWidth(60)
         self.btn_alert.setEnabled(False)
-        for b in (self.btn_add, self.btn_del, self.btn_up, self.btn_dn, self.btn_cost, self.btn_alert):
+        for b in (self.btn_add, self.btn_del, self.btn_up, self.btn_dn,
+                  self.btn_cost, self.btn_edit_points, self.btn_alert):
             btn_col.addWidget(b)
         btn_col.addStretch(1)
 
@@ -173,7 +179,7 @@ class CodesTabMixin:
         return None
 
     def _append_code_row(self, code: str, checked: bool = False, name: str = None):
-        """向自选表追加一行：代码(可勾选/可编辑) + 名称(只读)。"""
+        """向自选表追加一行：代码(可勾选/可编辑) + 名称/买卖点(只读)。"""
         row = self.list_codes.rowCount()
         self.list_codes.insertRow(row)
 
@@ -191,9 +197,25 @@ class CodesTabMixin:
         name_it = QTableWidgetItem(name or "")
         name_it.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
 
+        buy_txt, sell_txt = "", ""
+        if hasattr(self.win, "get_trade_points"):
+            pt = self.win.get_trade_points(code) or {}
+            buy = float(pt.get("buy", 0) or 0)
+            sell = float(pt.get("sell", 0) or 0)
+            if buy > 0:
+                buy_txt = f"{buy:g}"
+            if sell > 0:
+                sell_txt = f"{sell:g}"
+        buy_it = QTableWidgetItem(buy_txt)
+        buy_it.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+        sell_it = QTableWidgetItem(sell_txt)
+        sell_it.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+
         self.list_codes.blockSignals(True)
         self.list_codes.setItem(row, 0, code_it)
         self.list_codes.setItem(row, 1, name_it)
+        self.list_codes.setItem(row, 2, buy_it)
+        self.list_codes.setItem(row, 3, sell_it)
         self.list_codes.blockSignals(False)
         return code_it
 
@@ -223,6 +245,31 @@ class CodesTabMixin:
         self.list_codes.blockSignals(True)
         name_it.setText(name)
         self.list_codes.blockSignals(False)
+
+    def _sync_row_points_from_config(self, row: int):
+        """按配置刷新指定行的买入点/卖出点列。"""
+        code_it = self.list_codes.item(row, 0)
+        if code_it is None:
+            return
+        code = code_it.data(Qt.UserRole) or self._normalize_code_or_none(code_it.text()) or code_it.text().strip()
+        buy_txt, sell_txt = "", ""
+        if code and hasattr(self.win, "get_trade_points"):
+            pt = self.win.get_trade_points(code) or {}
+            buy = float(pt.get("buy", 0) or 0)
+            sell = float(pt.get("sell", 0) or 0)
+            if buy > 0:
+                buy_txt = f"{buy:g}"
+            if sell > 0:
+                sell_txt = f"{sell:g}"
+        for col, text in ((2, buy_txt), (3, sell_txt)):
+            it = self.list_codes.item(row, col)
+            if it is None:
+                it = QTableWidgetItem("")
+                it.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+                self.list_codes.setItem(row, col, it)
+            self.list_codes.blockSignals(True)
+            it.setText(text)
+            self.list_codes.blockSignals(False)
 
     def _collect_codes_from_list(self):
         """遍历自选表，规范化代码并去重；无效行回退或删除，返回有效代码列表。"""
@@ -263,8 +310,8 @@ class CodesTabMixin:
 
     def _on_codes_changed(self, _item):
         """自选表变更：回写 codes/checked_codes；代码列变更时同步名称。"""
-        # 名称列只读，不回写配置
-        if _item is not None and self.list_codes.column(_item) == 1:
+        # 名称/买卖点列只读，不回写配置
+        if _item is not None and self.list_codes.column(_item) in (1, 2, 3):
             return
 
         codes = self._collect_codes_from_list()
@@ -285,6 +332,7 @@ class CodesTabMixin:
 
         if _item is not None and self.list_codes.column(_item) == 0:
             self._sync_row_name_from_config(self.list_codes.row(_item))
+            self._sync_row_points_from_config(self.list_codes.row(_item))
 
     def _add_code(self):
         """弹窗搜索/输入代码，确认后追加到自选列表并保存名称。"""
@@ -363,13 +411,14 @@ class CodesTabMixin:
             self._on_codes_changed(None)
 
     def _on_list_selection_changed(self):
-        """有选中行时才启用「设置成本」「封单预警」。"""
+        """有选中行时才启用「设置成本」「编辑」「封单预警」。"""
         has = self.list_codes.currentRow() >= 0
         self.btn_cost.setEnabled(has)
+        self.btn_edit_points.setEnabled(has)
         self.btn_alert.setEnabled(has)
 
     def _on_list_context_menu(self, pos):
-        """右键菜单：设置成本 / 封单预警。"""
+        """右键菜单：设置成本 / 编辑买卖点 / 封单预警。"""
         item = self.list_codes.itemAt(pos)
         if item is None:
             return
@@ -382,6 +431,9 @@ class CodesTabMixin:
         act = QAction("设置成本…", menu)
         act.triggered.connect(lambda: self._open_cost_dialog_for_item(code_item))
         menu.addAction(act)
+        act_points = QAction("编辑买卖点…", menu)
+        act_points.triggered.connect(lambda: self._open_points_dialog_for_item(code_item))
+        menu.addAction(act_points)
         act_alert = QAction("封单预警…", menu)
         act_alert.triggered.connect(lambda: self._open_alert_dialog_for_item(code_item))
         menu.addAction(act_alert)
@@ -414,6 +466,40 @@ class CodesTabMixin:
                 self.win.set_cost(code, cost, qty)
             except Exception:
                 pass
+
+    def _open_points_dialog_for_current(self):
+        """为当前选中代码打开买卖点编辑对话框。"""
+        row = self.list_codes.currentRow()
+        item = self.list_codes.item(row, 0) if row >= 0 else None
+        if item is not None:
+            self._open_points_dialog_for_item(item)
+
+    def _open_points_dialog_for_item(self, item: QTableWidgetItem):
+        """打开指定代码的买卖点对话框并写回。"""
+        raw = item.text().strip()
+        code = self._normalize_code_or_none(raw) or raw.lower()
+        if not code:
+            return
+        existing = {}
+        try:
+            existing = self.win.get_trade_points(code) or {}
+        except Exception:
+            existing = {}
+        dlg = BuySellDialog(
+            self,
+            code,
+            float(existing.get("buy", 0.0) or 0.0),
+            float(existing.get("sell", 0.0) or 0.0),
+        )
+        if dlg.exec() == QDialog.Accepted:
+            buy, sell = dlg.get_values()
+            try:
+                self.win.set_trade_points(code, buy, sell)
+            except Exception:
+                pass
+            row = self.list_codes.row(item)
+            if row >= 0:
+                self._sync_row_points_from_config(row)
 
     def _open_alert_dialog_for_current(self):
         """为当前选中代码打开封单预警对话框。"""
