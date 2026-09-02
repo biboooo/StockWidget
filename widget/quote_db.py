@@ -63,6 +63,57 @@ CREATE TABLE IF NOT EXISTS watchlist (
 )
 """
 
+# 价格/估值分位日快照：同日覆盖，异日新增
+_CREATE_VALUATION_QUANTILE_SQL = """
+CREATE TABLE IF NOT EXISTS valuation_quantile (
+    code TEXT NOT NULL,
+    trade_date TEXT NOT NULL,
+    range_start TEXT NOT NULL,
+    range_end TEXT NOT NULL,
+    price REAL,
+    price_q REAL,
+    pe REAL,
+    pe_q REAL,
+    pb REAL,
+    pb_q REAL,
+    ps REAL,
+    ps_q REAL,
+    pcf REAL,
+    pcf_q REAL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (code, trade_date)
+)
+"""
+
+# 列备注（与既有 stock_info_comment 同表）
+_CREATE_TABLE_COMMENT_SQL = """
+CREATE TABLE IF NOT EXISTS stock_info_comment (
+    table_name TEXT,
+    column_name TEXT,
+    comment TEXT,
+    PRIMARY KEY (table_name, column_name)
+)
+"""
+
+_VALUATION_QUANTILE_COMMENTS = [
+    ("valuation_quantile", "", "价格/估值历史分位日快照（同日覆盖）"),
+    ("valuation_quantile", "code", "股票代码，与行情一致，如 sh600036"),
+    ("valuation_quantile", "trade_date", "快照交易日，YYYY-MM-DD"),
+    ("valuation_quantile", "range_start", "分位计算区间起点，YYYYMMDD"),
+    ("valuation_quantile", "range_end", "分位计算区间终点，YYYYMMDD"),
+    ("valuation_quantile", "price", "当前收盘价"),
+    ("valuation_quantile", "price_q", "价格历史分位（0~1）"),
+    ("valuation_quantile", "pe", "市盈率 PE(TTM)"),
+    ("valuation_quantile", "pe_q", "PE 历史分位（0~1）"),
+    ("valuation_quantile", "pb", "市净率 PB(MRQ)"),
+    ("valuation_quantile", "pb_q", "PB 历史分位（0~1）"),
+    ("valuation_quantile", "ps", "市销率 PS(TTM)"),
+    ("valuation_quantile", "ps_q", "PS 历史分位（0~1）"),
+    ("valuation_quantile", "pcf", "市现率 PCF(经营现金流 TTM)"),
+    ("valuation_quantile", "pcf_q", "PCF 历史分位（0~1）"),
+    ("valuation_quantile", "updated_at", "数据更新时间"),
+]
+
 
 def _parse_point(v) -> Optional[float]:
     """将买卖点解析为 >0 的 float；无效返回 None。"""
@@ -119,6 +170,21 @@ class QuoteDB:
                 conn.execute("ALTER TABLE watchlist ADD COLUMN sell_point REAL")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_watchlist_sort ON watchlist(sort_order, code)"
+            )
+            conn.execute(_CREATE_VALUATION_QUANTILE_SQL)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_val_q_code_date "
+                "ON valuation_quantile(code, trade_date DESC)"
+            )
+            conn.execute(_CREATE_TABLE_COMMENT_SQL)
+            conn.executemany(
+                """
+                INSERT INTO stock_info_comment (table_name, column_name, comment)
+                VALUES (?, ?, ?)
+                ON CONFLICT(table_name, column_name) DO UPDATE SET
+                    comment=excluded.comment
+                """,
+                _VALUATION_QUANTILE_COMMENTS,
             )
             conn.commit()
 
@@ -290,6 +356,109 @@ class QuoteDB:
                 rows,
             )
             conn.commit()
+
+    def upsert_valuation_quantile(
+        self,
+        code: str,
+        *,
+        range_start: str,
+        range_end: str,
+        price: Optional[float] = None,
+        price_q: Optional[float] = None,
+        pe: Optional[float] = None,
+        pe_q: Optional[float] = None,
+        pb: Optional[float] = None,
+        pb_q: Optional[float] = None,
+        ps: Optional[float] = None,
+        ps_q: Optional[float] = None,
+        pcf: Optional[float] = None,
+        pcf_q: Optional[float] = None,
+        trade_date: Optional[str] = None,
+    ) -> None:
+        """写入/覆盖当日价格与 PE/PB/PS/PCF 分位快照。"""
+        key = _norm_code(code)
+        if not key:
+            return
+        now = _now()
+        day = trade_date or now.date().isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO valuation_quantile (
+                    code, trade_date, range_start, range_end,
+                    price, price_q, pe, pe_q, pb, pb_q, ps, ps_q, pcf, pcf_q,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(code, trade_date) DO UPDATE SET
+                    range_start=excluded.range_start,
+                    range_end=excluded.range_end,
+                    price=excluded.price,
+                    price_q=excluded.price_q,
+                    pe=excluded.pe,
+                    pe_q=excluded.pe_q,
+                    pb=excluded.pb,
+                    pb_q=excluded.pb_q,
+                    ps=excluded.ps,
+                    ps_q=excluded.ps_q,
+                    pcf=excluded.pcf,
+                    pcf_q=excluded.pcf_q,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    key,
+                    day,
+                    range_start,
+                    range_end,
+                    price,
+                    price_q,
+                    pe,
+                    pe_q,
+                    pb,
+                    pb_q,
+                    ps,
+                    ps_q,
+                    pcf,
+                    pcf_q,
+                    now.isoformat(),
+                ),
+            )
+            conn.commit()
+
+    def load_valuation_quantile(
+        self, code: str, trade_date: Optional[str] = None
+    ) -> Optional[dict]:
+        """读取某代码最新（或指定日）分位快照。"""
+        key = _norm_code(code)
+        if not key:
+            return None
+        cols = (
+            "code, trade_date, range_start, range_end, "
+            "price, price_q, pe, pe_q, pb, pb_q, ps, ps_q, pcf, pcf_q, updated_at"
+        )
+        with self._connect() as conn:
+            if trade_date:
+                row = conn.execute(
+                    f"SELECT {cols} FROM valuation_quantile WHERE code=? AND trade_date=?",
+                    (key, trade_date),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    f"""
+                    SELECT {cols} FROM valuation_quantile
+                    WHERE code=?
+                    ORDER BY trade_date DESC
+                    LIMIT 1
+                    """,
+                    (key,),
+                ).fetchone()
+        if not row:
+            return None
+        keys = (
+            "code", "trade_date", "range_start", "range_end",
+            "price", "price_q", "pe", "pe_q", "pb", "pb_q",
+            "ps", "ps_q", "pcf", "pcf_q", "updated_at",
+        )
+        return dict(zip(keys, row))
 
 
 def init_db(db_path: str) -> QuoteDB:
